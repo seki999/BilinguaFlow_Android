@@ -8,15 +8,17 @@
 
     <!--
          Required on Android 11+ (API 30) package visibility so SpeechRecognizer.isRecognitionAvailable()
-         and createSpeechRecognizer()/startListening() can actually see and bind to the device's
-         RecognitionService implementation. SpeechRecognizer binds a Service (RecognitionService.SERVICE_INTERFACE),
-         not an Activity, so the queries element must target "android.speech.RecognitionService" —
-         "android.speech.action.RECOGNIZE_SPEECH" is only for the separate, Activity-based
-         RecognizerIntent UI flow (startActivityForResult), which this app does not use.
+         and createSpeechRecognizer()/startListening() can see and bind to the device's speech
+         recognition provider. Different OEM builds resolve this via different intent actions —
+         some check RecognitionService.SERVICE_INTERFACE (the actual Service SpeechRecognizer binds
+         to), others still gate on the legacy RecognizerIntent action — so both are declared.
     -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
     </queries>
 
