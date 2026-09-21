@@ -2,6 +2,7 @@ package com.seki999.bilinguaflow.service
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -134,11 +135,12 @@ class AndroidSpeechRecognitionService(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // Let one session keep listening through brief pauses instead of ending the utterance
-            // early — fewer restart cycles means fewer gaps in continuous audio (e.g. a movie's
-            // dialogue), at the cost of a slightly longer delay before each final result lands.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_MS)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_MS)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // Ask capable providers to return sentence segments without restarting the mic.
+                putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION,
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, SEGMENTED_SESSION_MS)
+            }
         }
 
         Logger.d("startListening() language=$languageTag generation=$myGeneration")
@@ -199,6 +201,24 @@ class AndroidSpeechRecognitionService(
                 listener?.onFinalResult("")
             }
 
+            scheduleRestart(myGeneration, RESTART_DELAY_MS)
+        }
+
+        override fun onSegmentResults(segmentResults: Bundle) {
+            if (!sessionActive || myGeneration != generation) return
+            val candidates = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+            val text = candidateSelector.selectBest(candidates, segmentResults.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES))
+            Logger.i("onSegmentResults text=$text")
+            if (text.isNotBlank()) {
+                lastFinalResult = text
+                listener?.onFinalResult(text)
+            }
+        }
+
+        override fun onEndOfSegmentedSession() {
+            if (!sessionActive || myGeneration != generation) return
+            Logger.d("onEndOfSegmentedSession")
+            listener?.onFinalResult("")
             scheduleRestart(myGeneration, RESTART_DELAY_MS)
         }
 
@@ -285,7 +305,6 @@ class AndroidSpeechRecognitionService(
         private const val BUSY_RESTART_DELAY_MS = 800L
         private const val MAX_BUSY_BACKOFF_MULTIPLIER = 5
 
-        // Allow short pauses without forcing a restart; partial text is shown immediately.
-        private const val COMPLETE_SILENCE_MS = 2_000
+        private const val SEGMENTED_SESSION_MS = 60_000
     }
 }
