@@ -17,9 +17,17 @@ import com.seki999.bilinguaflow.util.Logger
  * [android.speech.SpeechRecognizer] normally stops listening after a single utterance, so this
  * class drives its own restart loop: every [onResults]/[onError] callback schedules a fresh
  * `startListening()` call a short delay later (via a main-thread [Handler]), until [stop] is
- * called. Only one [SpeechRecognizer] instance is ever alive at a time, and any pending restart
- * is always cancelled before a new one is scheduled, which keeps the loop from racing itself into
- * `ERROR_RECOGNIZER_BUSY` or duplicate recognizers.
+ * called.
+ *
+ * Each restart creates a brand-new [SpeechRecognizer] instance (the framework does not guarantee
+ * a used one can be safely restarted), and `stopListening()`/`cancel()`/`destroy()` on a recognizer
+ * whose service connection hasn't finished binding yet can silently fail to actually cancel the
+ * in-flight request — the server side keeps processing and delivers its result to our listener a
+ * few seconds later regardless. To stop a fast Pause/Resume/Stop sequence from leaving one of
+ * these late, "orphaned" callbacks alive to schedule its own independent restart, every chain
+ * (its listener callbacks and its scheduled [Runnable]) is tagged with the [generation] active
+ * when it started; [start] and [stop] both bump [generation], which makes every earlier chain's
+ * callbacks and timers immediately inert, however many happen to still be in flight.
  *
  * Must be driven from the main thread (the same requirement [android.speech.SpeechRecognizer]
  * itself has).
@@ -38,6 +46,9 @@ class AndroidSpeechRecognitionService(
 
     /** True between [start] and [stop]/[destroy] — gates whether a restart is ever scheduled. */
     private var sessionActive = false
+
+    /** Bumped on every [start]/[stop]; invalidates any earlier, still in-flight restart chain. */
+    private var generation = 0
     private var pendingRestart: Runnable? = null
     private var consecutiveBusyErrors = 0
     private var lastFinalResult: String? = null
@@ -53,14 +64,16 @@ class AndroidSpeechRecognitionService(
         if (destroyed) return
         this.languageTag = languageTag
         sessionActive = true
+        generation++
         consecutiveBusyErrors = 0
         lastFinalResult = null
         cancelPendingRestart()
-        startListeningInternal()
+        startListeningInternal(generation)
     }
 
     override fun stop() {
         sessionActive = false
+        generation++
         cancelPendingRestart()
         releaseRecognizer()
     }
@@ -79,8 +92,8 @@ class AndroidSpeechRecognitionService(
         runCatching { r.destroy() }
     }
 
-    private fun startListeningInternal() {
-        if (!sessionActive) return
+    private fun startListeningInternal(myGeneration: Int) {
+        if (!sessionActive || myGeneration != generation) return
 
         if (!isAvailable()) {
             Logger.w("Speech recognition unavailable on this device")
@@ -93,7 +106,7 @@ class AndroidSpeechRecognitionService(
 
         val newRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext)
         recognizer = newRecognizer
-        newRecognizer.setRecognitionListener(createAndroidListener())
+        newRecognizer.setRecognitionListener(createAndroidListener(myGeneration))
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -106,11 +119,11 @@ class AndroidSpeechRecognitionService(
         runCatching { newRecognizer.startListening(intent) }
             .onFailure { error ->
                 Logger.w("startListening() failed, scheduling retry", error)
-                scheduleRestart(BUSY_RESTART_DELAY_MS)
+                scheduleRestart(myGeneration, BUSY_RESTART_DELAY_MS)
             }
     }
 
-    private fun createAndroidListener(): AndroidRecognitionListener = object : AndroidRecognitionListener {
+    private fun createAndroidListener(myGeneration: Int): AndroidRecognitionListener = object : AndroidRecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) = Unit
         override fun onBeginningOfSpeech() = Unit
         override fun onRmsChanged(rmsdB: Float) = Unit
@@ -119,6 +132,7 @@ class AndroidSpeechRecognitionService(
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (myGeneration != generation) return
             val text = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 .orEmpty()
@@ -130,6 +144,7 @@ class AndroidSpeechRecognitionService(
         }
 
         override fun onResults(results: Bundle?) {
+            if (myGeneration != generation) return
             consecutiveBusyErrors = 0
             val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
             val confidences = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
@@ -141,10 +156,11 @@ class AndroidSpeechRecognitionService(
                 listener?.onFinalResult(text)
             }
 
-            scheduleRestart(RESTART_DELAY_MS)
+            scheduleRestart(myGeneration, RESTART_DELAY_MS)
         }
 
         override fun onError(error: Int) {
+            if (myGeneration != generation) return
             when (error) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                     Logger.w("Speech recognition error: insufficient permissions")
@@ -156,20 +172,20 @@ class AndroidSpeechRecognitionService(
                     consecutiveBusyErrors = (consecutiveBusyErrors + 1).coerceAtMost(MAX_BUSY_BACKOFF_MULTIPLIER)
                     Logger.w("Speech recognizer busy, backing off (x$consecutiveBusyErrors)")
                     listener?.onRecoverableError(error)
-                    scheduleRestart(BUSY_RESTART_DELAY_MS * consecutiveBusyErrors)
+                    scheduleRestart(myGeneration, BUSY_RESTART_DELAY_MS * consecutiveBusyErrors)
                 }
 
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                     // Normal silence — do not surface as an error, just keep listening.
                     consecutiveBusyErrors = 0
-                    scheduleRestart(RESTART_DELAY_MS)
+                    scheduleRestart(myGeneration, RESTART_DELAY_MS)
                 }
 
                 SpeechRecognizer.ERROR_CLIENT -> {
                     // Usually a benign race from cancel()/destroy() during a restart.
                     consecutiveBusyErrors = 0
-                    scheduleRestart(RESTART_DELAY_MS)
+                    scheduleRestart(myGeneration, RESTART_DELAY_MS)
                 }
 
                 SpeechRecognizer.ERROR_AUDIO,
@@ -179,22 +195,23 @@ class AndroidSpeechRecognitionService(
                     Logger.w("Recoverable speech recognition error: $error")
                     consecutiveBusyErrors = 0
                     listener?.onRecoverableError(error)
-                    scheduleRestart(RESTART_DELAY_MS)
+                    scheduleRestart(myGeneration, RESTART_DELAY_MS)
                 }
 
                 else -> {
                     Logger.w("Unhandled speech recognition error: $error")
                     listener?.onRecoverableError(error)
-                    scheduleRestart(RESTART_DELAY_MS)
+                    scheduleRestart(myGeneration, RESTART_DELAY_MS)
                 }
             }
         }
     }
 
-    private fun scheduleRestart(delayMs: Long) {
+    private fun scheduleRestart(myGeneration: Int, delayMs: Long) {
+        if (myGeneration != generation) return
         cancelPendingRestart()
         if (!sessionActive) return
-        val runnable = Runnable { startListeningInternal() }
+        val runnable = Runnable { startListeningInternal(myGeneration) }
         pendingRestart = runnable
         mainHandler.postDelayed(runnable, delayMs)
     }
