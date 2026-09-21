@@ -133,6 +133,11 @@ class AndroidSpeechRecognitionService(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Let one session keep listening through brief pauses instead of ending the utterance
+            // early — fewer restart cycles means fewer gaps in continuous audio (e.g. a movie's
+            // dialogue), at the cost of a slightly longer delay before each final result lands.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_MS)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_MS)
         }
 
         Logger.d("startListening() language=$languageTag generation=$myGeneration")
@@ -273,8 +278,16 @@ class AndroidSpeechRecognitionService(
 
     companion object {
         private const val MAX_RESULTS = 5
-        private const val RESTART_DELAY_MS = 300L
+        private const val RESTART_DELAY_MS = 80L
         private const val BUSY_RESTART_DELAY_MS = 800L
         private const val MAX_BUSY_BACKOFF_MULTIPLIER = 5
+
+        /**
+         * How long a trailing silence must last before a session ends the current utterance.
+         * Longer than the ~700ms-1000ms most recognizers default to, so one session keeps
+         * capturing through short pauses instead of restarting (and losing a beat of audio)
+         * every time the speaker/source briefly stops.
+         */
+        private const val COMPLETE_SILENCE_MS = 2_000
     }
 }
