@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BilinguaFlow</string>
+
+    <!-- Top bar -->
+    <string name="label_language">Language</string>
+
+    <!-- Status -->
+    <string name="status_idle">Idle</string>
+    <string name="status_listening">Listening</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_error">Error</string>
+
+    <!-- Sections -->
+    <string name="label_live_recognition">Live Recognition</string>
+    <string name="label_transcript">Transcript</string>
+    <string name="transcript_placeholder">Your transcript will appear here.</string>
+    <string name="live_recognition_placeholder">Listening…</string>
+
+    <!-- Controls -->
+    <string name="btn_start">Start</string>
+    <string name="btn_pause">Pause</string>
+    <string name="btn_resume">Resume</string>
+    <string name="btn_stop">Stop</string>
+    <string name="btn_clear">Clear</string>
+    <string name="btn_copy_all">Copy All</string>
+    <string name="btn_open_app_settings">Open App Settings</string>
+
+    <!-- Messages -->
+    <string name="msg_transcript_copied">Transcript copied.</string>
+    <string name="msg_mic_permission_required">Microphone permission is required for speech recognition.</string>
+    <string name="msg_mic_permission_permanently_denied">Microphone permission was denied. Please enable it from App Settings to continue.</string>
+    <string name="msg_stt_unavailable">Speech recognition is not available on this device.</string>
+    <string name="msg_auto_stopped_inactivity">Stopped automatically after 5 minutes of inactivity.</string>
+
+    <!-- Accessibility -->
+    <string name="cd_status_indicator">Listening status indicator</string>
+</resources>

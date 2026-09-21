@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details, and see https://developer.android.com/reference/android/os/PersistableBundle
+   for the full documentation.
+
+   BilinguaFlow does not record or store audio; only lightweight preferences
+   (selected language, last transcript text) are eligible for backup.
+-->
+<full-backup-content>
+</full-backup-content>
