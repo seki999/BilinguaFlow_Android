@@ -64,4 +64,62 @@ class TranscriptManagerTest {
         manager.restore("Hello everyone.\n\nToday I want to talk about our new project.")
         assertEquals("Hello everyone.\n\nToday I want to talk about our new project.", manager.fullText)
     }
+
+    @Test
+    fun `partial revisions replace the draft without duplicating it`() {
+        val manager = TranscriptManager()
+        manager.appendFinalResult("Previous sentence.")
+        manager.updatePartial("Hello")
+        manager.updatePartial("Hello world")
+        assertEquals("Previous sentence.\n\nHello world", manager.fullText)
+        manager.appendFinalResult("Hello, world!")
+        assertEquals("Previous sentence.\n\nHello, world!", manager.fullText)
+    }
+
+    @Test
+    fun `interrupted utterance is retained exactly once`() {
+        val manager = TranscriptManager()
+        manager.updatePartial("Still speaking")
+        assertTrue(manager.commitPending())
+        assertFalse(manager.commitPending())
+        manager.updatePartial("Next sentence")
+        assertEquals("Still speaking\n\nNext sentence", manager.fullText)
+    }
+
+    @Test
+    fun `empty final falls back to latest nonblank partial`() {
+        val manager = TranscriptManager()
+        manager.updatePartial("Recognized words")
+        manager.updatePartial("  ")
+        assertTrue(manager.appendFinalResult(""))
+        assertEquals("Recognized words", manager.fullText)
+    }
+
+    @Test
+    fun `clear discards pending text as well as final text`() {
+        val manager = TranscriptManager()
+        manager.appendFinalResult("Old")
+        manager.updatePartial("Pending")
+        manager.clear()
+        assertFalse(manager.commitPending())
+        assertTrue(manager.isEmpty)
+    }
+
+    @Test
+    fun `duplicate final also removes its pending draft`() {
+        val manager = TranscriptManager()
+        manager.appendFinalResult("Hello")
+        manager.updatePartial("hello")
+        assertFalse(manager.appendFinalResult("Hello"))
+        assertEquals("Hello", manager.fullText)
+    }
+
+    @Test
+    fun `restore discards previous draft`() {
+        val manager = TranscriptManager()
+        manager.updatePartial("Pending")
+        manager.restore("Saved")
+        assertFalse(manager.commitPending())
+        assertEquals("Saved", manager.fullText)
+    }
 }

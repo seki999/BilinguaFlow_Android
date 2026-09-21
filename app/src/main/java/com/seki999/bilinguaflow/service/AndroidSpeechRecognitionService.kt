@@ -67,6 +67,7 @@ class AndroidSpeechRecognitionService(
     override fun start(languageTag: String) {
         if (destroyed) return
         Logger.i("start() language=$languageTag")
+        if (sessionActive) stop()
         this.languageTag = languageTag
         sessionActive = true
         generation++
@@ -195,7 +196,7 @@ class AndroidSpeechRecognitionService(
                 Logger.i("Final result selected: \"$text\"")
                 listener?.onFinalResult(text)
             } else {
-                Logger.d("onResults produced no usable text after candidate selection")
+                listener?.onFinalResult("")
             }
 
             scheduleRestart(myGeneration, RESTART_DELAY_MS)
@@ -220,12 +221,14 @@ class AndroidSpeechRecognitionService(
 
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                    // Normal silence — do not surface as an error, just keep listening on the same instance.
+                    listener?.onRecoverableError(error)
+                    // Keep listening on the same instance after silence.
                     consecutiveBusyErrors = 0
                     scheduleRestart(myGeneration, RESTART_DELAY_MS)
                 }
 
                 SpeechRecognizer.ERROR_CLIENT -> {
+                    listener?.onRecoverableError(error)
                     // The client-side recognizer state is unreliable after this error; recreate it.
                     consecutiveBusyErrors = 0
                     recreateRecognizer(myGeneration)
@@ -282,12 +285,7 @@ class AndroidSpeechRecognitionService(
         private const val BUSY_RESTART_DELAY_MS = 800L
         private const val MAX_BUSY_BACKOFF_MULTIPLIER = 5
 
-        /**
-         * How long a trailing silence must last before a session ends the current utterance.
-         * Longer than the ~700ms-1000ms most recognizers default to, so one session keeps
-         * capturing through short pauses instead of restarting (and losing a beat of audio)
-         * every time the speaker/source briefly stops.
-         */
+        // Allow short pauses without forcing a restart; partial text is shown immediately.
         private const val COMPLETE_SILENCE_MS = 2_000
     }
 }

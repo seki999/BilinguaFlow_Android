@@ -65,11 +65,14 @@ class SpeechViewModel(
 
     private val recognitionListener = object : SpeechRecognitionListener {
         override fun onPartialResult(text: String) {
-            _uiState.update { it.copy(partialText = text) }
+            if (text.isBlank()) return
+            inactivityTracker.recordValidSpeech()
+            transcriptManager.updatePartial(text)
+            _uiState.update { it.copy(partialText = text, transcript = transcriptManager.fullText) }
         }
 
         override fun onFinalResult(text: String) {
-            inactivityTracker.recordValidSpeech()
+            if (text.isNotBlank()) inactivityTracker.recordValidSpeech()
             if (transcriptManager.appendFinalResult(text)) {
                 persistTranscript()
             }
@@ -78,9 +81,11 @@ class SpeechViewModel(
 
         override fun onRecoverableError(errorCode: Int) {
             Logger.d("Recoverable speech recognition error: $errorCode")
+            commitPendingTranscript()
         }
 
         override fun onFatalError(message: String) {
+            commitPendingTranscript()
             stopInactivityWatcher()
             _uiState.update {
                 it.copy(
@@ -107,7 +112,8 @@ class SpeechViewModel(
             }
             if (savedStateHandle.get<String>(KEY_TRANSCRIPT) == null) {
                 val saved = preferencesRepository.savedTranscript.first()
-                if (saved.isNotBlank()) {
+                if (saved.isNotBlank() && transcriptManager.isEmpty &&
+                    savedStateHandle.get<String>(KEY_TRANSCRIPT) == null) {
                     transcriptManager.restore(saved)
                     savedStateHandle[KEY_TRANSCRIPT] = saved
                     _uiState.update { it.copy(transcript = saved) }
@@ -135,6 +141,7 @@ class SpeechViewModel(
     fun onPauseClicked() {
         val current = _uiState.value.listeningState
         if (current != ListeningState.LISTENING) return
+        commitPendingTranscript()
         speechService.stop()
         stopInactivityWatcher()
         _uiState.update {
@@ -155,6 +162,7 @@ class SpeechViewModel(
     fun onStopClicked() {
         val current = _uiState.value.listeningState
         if (current == ListeningState.STOPPED || current == ListeningState.IDLE) return
+        commitPendingTranscript()
         speechService.stop()
         stopInactivityWatcher()
         _uiState.update {
@@ -163,10 +171,18 @@ class SpeechViewModel(
     }
 
     fun onClearClicked() {
+        val wasListening = _uiState.value.listeningState == ListeningState.LISTENING
+        if (wasListening) speechService.stop()
         transcriptManager.clear()
         savedStateHandle[KEY_TRANSCRIPT] = ""
         _uiState.update { it.copy(transcript = "", partialText = "") }
         viewModelScope.launch { preferencesRepository.saveTranscript("") }
+        if (wasListening) speechService.start(_uiState.value.selectedLanguage.tag)
+    }
+
+    private fun commitPendingTranscript() {
+        if (transcriptManager.commitPending()) persistTranscript()
+        _uiState.update { it.copy(partialText = "", transcript = transcriptManager.fullText) }
     }
 
     private fun persistTranscript() {
@@ -197,6 +213,7 @@ class SpeechViewModel(
 
     private fun onInactivityTimeout() {
         val current = _uiState.value.listeningState
+        commitPendingTranscript()
         speechService.stop()
         inactivityTracker.stop()
         inactivityJob = null
