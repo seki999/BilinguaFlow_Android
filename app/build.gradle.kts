@@ -67,6 +67,9 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.mlkit.translate)
+    implementation(libs.play.services.base)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

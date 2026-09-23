@@ -122,4 +122,47 @@ class TranscriptManagerTest {
         assertFalse(manager.commitPending())
         assertEquals("Saved", manager.fullText)
     }
+
+    @Test
+    fun `a shorter final result does not discard the drafts extra tail`() {
+        val manager = TranscriptManager()
+        manager.updatePartial("hello everyone this is a test")
+        manager.appendFinalResult("hello everyone")
+        assertTrue(manager.fullText.contains("hello everyone"))
+        assertTrue(manager.fullText.contains("this is a test"))
+    }
+
+    @Test
+    fun `an unrelated final result does not wipe out a newer unrelated draft`() {
+        val manager = TranscriptManager()
+        manager.appendFinalResult("Hello")
+        manager.updatePartial("World")
+        assertFalse(manager.appendFinalResult("Hello"))
+        assertEquals("Hello\n\nWorld", manager.fullText)
+    }
+
+    @Test
+    fun `a final result that only differs by punctuation still clears the draft`() {
+        val manager = TranscriptManager()
+        manager.updatePartial("Hello world")
+        manager.appendFinalResult("Hello, world!")
+        assertEquals("Hello, world!", manager.fullText)
+    }
+
+    @Test
+    fun `lastEntry is null until something is committed`() {
+        val manager = TranscriptManager()
+        assertEquals(null, manager.lastEntry)
+        manager.updatePartial("still just a draft")
+        assertEquals(null, manager.lastEntry)
+    }
+
+    @Test
+    fun `lastEntry reflects the most recently committed sentence`() {
+        val manager = TranscriptManager()
+        manager.appendFinalResult("First sentence.")
+        assertEquals("First sentence.", manager.lastEntry)
+        manager.appendFinalResult("Second sentence.")
+        assertEquals("Second sentence.", manager.lastEntry)
+    }
 }

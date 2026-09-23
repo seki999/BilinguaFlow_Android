@@ -2,7 +2,7 @@ package com.seki999.bilinguaflow.service
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -44,6 +44,7 @@ class AndroidSpeechRecognitionService(
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     private var recognizer: SpeechRecognizer? = null
     private var listener: SpeechRecognitionListener? = null
@@ -75,6 +76,7 @@ class AndroidSpeechRecognitionService(
         consecutiveBusyErrors = 0
         lastFinalResult = null
         cancelPendingRestart()
+        muteRecognitionSounds()
         createRecognizerIfNeeded(generation)
         startListeningInternal(generation)
     }
@@ -85,6 +87,22 @@ class AndroidSpeechRecognitionService(
         generation++
         cancelPendingRestart()
         teardownRecognizer()
+        unmuteRecognitionSounds()
+    }
+
+    /**
+     * The recognizer plays a start/end beep (via [AudioManager.STREAM_MUSIC]) on every
+     * `startListening()` call — with the restart loop calling it after every utterance, that's a
+     * near-constant beeping during continuous dictation. Muting that stream for the whole listening
+     * session (restored on [stop]) is the standard workaround, since there's no public API to
+     * disable the recognizer's own sound effects.
+     */
+    private fun muteRecognitionSounds() {
+        runCatching { audioManager?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0) }
+    }
+
+    private fun unmuteRecognitionSounds() {
+        runCatching { audioManager?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0) }
     }
 
     override fun destroy() {
@@ -135,12 +153,14 @@ class AndroidSpeechRecognitionService(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // Ask capable providers to return sentence segments without restarting the mic.
-                putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION,
-                    RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, SEGMENTED_SESSION_MS)
-            }
+            // A brief mid-sentence pause otherwise trips the recognizer's endpointer, splitting one
+            // utterance into two final results (e.g. "can you hear" / "me" as separate entries).
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_LENGTH_MS)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                COMPLETE_SILENCE_LENGTH_MS
+            )
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, MINIMUM_LENGTH_MS)
         }
 
         Logger.d("startListening() language=$languageTag generation=$myGeneration")
@@ -201,24 +221,6 @@ class AndroidSpeechRecognitionService(
                 listener?.onFinalResult("")
             }
 
-            scheduleRestart(myGeneration, RESTART_DELAY_MS)
-        }
-
-        override fun onSegmentResults(segmentResults: Bundle) {
-            if (!sessionActive || myGeneration != generation) return
-            val candidates = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-            val text = candidateSelector.selectBest(candidates, segmentResults.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES))
-            Logger.i("onSegmentResults text=$text")
-            if (text.isNotBlank()) {
-                lastFinalResult = text
-                listener?.onFinalResult(text)
-            }
-        }
-
-        override fun onEndOfSegmentedSession() {
-            if (!sessionActive || myGeneration != generation) return
-            Logger.d("onEndOfSegmentedSession")
-            listener?.onFinalResult("")
             scheduleRestart(myGeneration, RESTART_DELAY_MS)
         }
 
@@ -304,7 +306,7 @@ class AndroidSpeechRecognitionService(
         private const val RESTART_DELAY_MS = 80L
         private const val BUSY_RESTART_DELAY_MS = 800L
         private const val MAX_BUSY_BACKOFF_MULTIPLIER = 5
-
-        private const val SEGMENTED_SESSION_MS = 60_000
+        private const val COMPLETE_SILENCE_LENGTH_MS = 3_000L
+        private const val MINIMUM_LENGTH_MS = 15_000L
     }
 }

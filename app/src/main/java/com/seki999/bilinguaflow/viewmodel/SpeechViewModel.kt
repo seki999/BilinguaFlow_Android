@@ -13,9 +13,12 @@ import com.seki999.bilinguaflow.model.LanguageOptions
 import com.seki999.bilinguaflow.model.ListeningEvent
 import com.seki999.bilinguaflow.model.ListeningState
 import com.seki999.bilinguaflow.model.ListeningStateTransitions
+import com.seki999.bilinguaflow.model.TranslationLanguageOption
+import com.seki999.bilinguaflow.model.TranslationLanguageOptions
 import com.seki999.bilinguaflow.repository.PreferencesRepository
 import com.seki999.bilinguaflow.service.AndroidSpeechRecognitionService
 import com.seki999.bilinguaflow.service.InactivityTracker
+import com.seki999.bilinguaflow.service.OnDeviceTranslationService
 import com.seki999.bilinguaflow.service.SpeechRecognitionListener
 import com.seki999.bilinguaflow.service.SpeechRecognitionService
 import com.seki999.bilinguaflow.service.TranscriptManager
@@ -35,25 +38,35 @@ import kotlinx.coroutines.launch
 
 /**
  * Owns the continuous listening session: forwards Start/Pause/Resume/Stop/Clear from the UI to
- * [SpeechRecognitionService], accumulates results via [TranscriptManager], and runs the 5-minute
- * [InactivityTracker] watchdog. Survives configuration changes as an Activity-scoped ViewModel;
- * [savedStateHandle] additionally restores the transcript and selected language after process
- * death.
+ * [SpeechRecognitionService], accumulates results via [TranscriptManager], translates each
+ * committed sentence via [OnDeviceTranslationService], and runs the 5-minute [InactivityTracker]
+ * watchdog. Survives configuration changes as an Activity-scoped ViewModel; [savedStateHandle]
+ * additionally restores the transcript and selected languages after process death.
  */
 class SpeechViewModel(
     application: Application,
     private val savedStateHandle: SavedStateHandle,
-    private val speechService: SpeechRecognitionService = AndroidSpeechRecognitionService(application)
+    private val speechService: SpeechRecognitionService = AndroidSpeechRecognitionService(application),
+    private val translationService: OnDeviceTranslationService? = OnDeviceTranslationService(application)
 ) : AndroidViewModel(application) {
 
     private val preferencesRepository = PreferencesRepository(application)
     private val transcriptManager = TranscriptManager()
+    private val translatedTranscriptManager = TranscriptManager()
     private val inactivityTracker = InactivityTracker()
 
     private val _uiState = MutableStateFlow(
         SpeechUiState(
             selectedLanguage = LanguageOptions.byTag(savedStateHandle[KEY_LANGUAGE_TAG]),
-            transcript = savedStateHandle[KEY_TRANSCRIPT] ?: ""
+            transcript = savedStateHandle[KEY_TRANSCRIPT] ?: "",
+            translationSupported = isTranslationSupported(),
+            selectedTranslationLanguage = TranslationLanguageOptions.byTag(savedStateHandle[KEY_TRANSLATION_LANGUAGE_TAG]),
+            translationMessage = if (isTranslationSupported()) {
+                null
+            } else {
+                "On-device translation isn't available on this device (needs Android 12+ with a system " +
+                    "translation service installed, e.g. Google's on-device translation)."
+            }
         )
     )
     val uiState: StateFlow<SpeechUiState> = _uiState.asStateFlow()
@@ -75,6 +88,7 @@ class SpeechViewModel(
             if (text.isNotBlank()) inactivityTracker.recordValidSpeech()
             if (transcriptManager.appendFinalResult(text)) {
                 persistTranscript()
+                translateLatestSentence()
             }
             _uiState.update { it.copy(partialText = "", transcript = transcriptManager.fullText) }
         }
@@ -110,6 +124,11 @@ class SpeechViewModel(
                 _uiState.update { it.copy(selectedLanguage = LanguageOptions.byTag(tag)) }
                 savedStateHandle[KEY_LANGUAGE_TAG] = tag
             }
+            if (savedStateHandle.get<String>(KEY_TRANSLATION_LANGUAGE_TAG) == null) {
+                val tag = preferencesRepository.translationLanguageTag.first()
+                _uiState.update { it.copy(selectedTranslationLanguage = TranslationLanguageOptions.byTag(tag)) }
+                savedStateHandle[KEY_TRANSLATION_LANGUAGE_TAG] = tag
+            }
             if (savedStateHandle.get<String>(KEY_TRANSCRIPT) == null) {
                 val saved = preferencesRepository.savedTranscript.first()
                 if (saved.isNotBlank() && transcriptManager.isEmpty &&
@@ -126,6 +145,16 @@ class SpeechViewModel(
         _uiState.update { it.copy(selectedLanguage = option) }
         savedStateHandle[KEY_LANGUAGE_TAG] = option.tag
         viewModelScope.launch { preferencesRepository.saveLanguageTag(option.tag) }
+    }
+
+    fun onTranslationLanguageSelected(option: TranslationLanguageOption) {
+        // Start the translated panel fresh in the new target language rather than mixing languages.
+        translatedTranscriptManager.clear()
+        _uiState.update {
+            it.copy(selectedTranslationLanguage = option, translatedText = "", translationMessage = null)
+        }
+        savedStateHandle[KEY_TRANSLATION_LANGUAGE_TAG] = option.tag
+        viewModelScope.launch { preferencesRepository.saveTranslationLanguageTag(option.tag) }
     }
 
     fun onStartClicked() {
@@ -174,15 +203,62 @@ class SpeechViewModel(
         val wasListening = _uiState.value.listeningState == ListeningState.LISTENING
         if (wasListening) speechService.stop()
         transcriptManager.clear()
+        translatedTranscriptManager.clear()
         savedStateHandle[KEY_TRANSCRIPT] = ""
-        _uiState.update { it.copy(transcript = "", partialText = "") }
+        _uiState.update { it.copy(transcript = "", partialText = "", translatedText = "", translationMessage = null) }
         viewModelScope.launch { preferencesRepository.saveTranscript("") }
         if (wasListening) speechService.start(_uiState.value.selectedLanguage.tag)
     }
 
     private fun commitPendingTranscript() {
-        if (transcriptManager.commitPending()) persistTranscript()
+        if (transcriptManager.commitPending()) {
+            persistTranscript()
+            translateLatestSentence()
+        }
         _uiState.update { it.copy(partialText = "", transcript = transcriptManager.fullText) }
+    }
+
+    private fun isTranslationSupported(): Boolean = translationService?.isSupported() == true
+
+    private fun translateLatestSentence() {
+        val service = translationService
+        if (service == null) {
+            Logger.d("translateLatestSentence: skipped, no OnDeviceTranslationService instance")
+            return
+        }
+        if (!service.isSupported()) {
+            Logger.d("translateLatestSentence: skipped, service.isSupported()=false")
+            return
+        }
+        val sentence = transcriptManager.lastEntry ?: return
+        val sourceTag = _uiState.value.selectedLanguage.tag
+        val targetTag = _uiState.value.selectedTranslationLanguage.tag
+        Logger.i("translateLatestSentence: \"$sentence\" $sourceTag -> $targetTag")
+
+        viewModelScope.launch {
+            val result = try {
+                service.translate(sentence, sourceTag, targetTag)
+            } catch (t: Throwable) {
+                Logger.w("translateLatestSentence: threw unexpectedly", t)
+                Result.failure(t)
+            }
+
+            result
+                .onSuccess { translated ->
+                    Logger.i("translateLatestSentence: succeeded -> \"$translated\"")
+                    if (translatedTranscriptManager.appendFinalResult(translated)) {
+                        _uiState.update {
+                            it.copy(translatedText = translatedTranscriptManager.fullText, translationMessage = null)
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    Logger.w("translateLatestSentence: failed", error)
+                    val message = error.message?.takeIf { it.isNotBlank() }
+                        ?: "Translation failed: ${error::class.simpleName}"
+                    _uiState.update { it.copy(translationMessage = message) }
+                }
+        }
     }
 
     private fun persistTranscript() {
@@ -230,10 +306,12 @@ class SpeechViewModel(
         super.onCleared()
         inactivityJob?.cancel()
         speechService.destroy()
+        translationService?.destroy()
     }
 
     companion object {
         private const val KEY_LANGUAGE_TAG = "language_tag"
+        private const val KEY_TRANSLATION_LANGUAGE_TAG = "translation_language_tag"
         private const val KEY_TRANSCRIPT = "transcript"
         private const val INACTIVITY_CHECK_INTERVAL_MS = 1_000L
 

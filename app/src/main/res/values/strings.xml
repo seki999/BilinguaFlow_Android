@@ -13,10 +13,11 @@
     <string name="status_error">Error</string>
 
     <!-- Sections -->
-    <string name="label_live_recognition">Live Recognition</string>
-    <string name="label_transcript">Transcript</string>
-    <string name="transcript_placeholder">Your transcript will appear here.</string>
-    <string name="live_recognition_placeholder">Listening…</string>
+    <string name="label_original_text">Original Text</string>
+    <string name="original_text_placeholder">Your speech will appear here as you talk.</string>
+    <string name="label_translation_language">Translate to</string>
+    <string name="label_translated_text">Translated Text</string>
+    <string name="translated_text_placeholder">Translation will appear here.</string>
 
     <!-- Controls -->
     <string name="btn_start">Start</string>

@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -41,9 +42,9 @@ import com.seki999.bilinguaflow.R
 import com.seki999.bilinguaflow.model.ListeningState
 import com.seki999.bilinguaflow.ui.components.ControlButtons
 import com.seki999.bilinguaflow.ui.components.LanguageSelector
-import com.seki999.bilinguaflow.ui.components.LiveRecognitionCard
 import com.seki999.bilinguaflow.ui.components.StatusIndicator
-import com.seki999.bilinguaflow.ui.components.TranscriptCard
+import com.seki999.bilinguaflow.ui.components.TextPanelCard
+import com.seki999.bilinguaflow.ui.components.TranslationLanguageSelector
 import com.seki999.bilinguaflow.viewmodel.SpeechUiEvent
 import com.seki999.bilinguaflow.viewmodel.SpeechViewModel
 import kotlinx.coroutines.launch
@@ -135,15 +136,29 @@ fun SpeechScreen(viewModel: SpeechViewModel) {
                 onLanguageSelected = viewModel::onLanguageSelected
             )
 
+            Spacer(Modifier.height(12.dp))
+            TranslationLanguageSelector(
+                selected = uiState.selectedTranslationLanguage,
+                onLanguageSelected = viewModel::onTranslationLanguageSelected,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(Modifier.height(16.dp))
             StatusIndicator(state = uiState.listeningState)
 
             Spacer(Modifier.height(16.dp))
-            LiveRecognitionCard(partialText = uiState.partialText)
+            TextPanelCard(
+                label = stringResource(R.string.label_original_text),
+                text = uiState.transcript,
+                placeholder = stringResource(R.string.original_text_placeholder),
+                modifier = Modifier.weight(1f)
+            )
 
             Spacer(Modifier.height(16.dp))
-            TranscriptCard(
-                transcript = uiState.transcript,
+            TextPanelCard(
+                label = stringResource(R.string.label_translated_text),
+                text = uiState.translatedText,
+                placeholder = uiState.translationMessage ?: stringResource(R.string.translated_text_placeholder),
                 modifier = Modifier.weight(1f)
             )
 
